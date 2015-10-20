@@ -29,6 +29,7 @@ module UI.NCurses
 	
 	-- * Window management
 	, newWindow
+	, getWindowRect
 	, closeWindow
 	, cloneWindow
 	, moveWindow
@@ -36,6 +37,7 @@ module UI.NCurses
 	, resizeWindow
 	, windowSize
 	, updateWindow
+	, updateWindowNoRefresh
 	
 	-- ** Copying window content
 	, OverlayMode(..)
@@ -66,6 +68,9 @@ module UI.NCurses
 	, clear
 	, clearLine
 	, setBackground
+	, overwriteFrom
+	, overlayFrom
+	, copyFrom
 	
 	-- * Attributes
 	, Attribute (..)
@@ -75,11 +80,12 @@ module UI.NCurses
 	-- * Colors
 	, Color (..)
 	, maxColor
-	, ColorID
+	, ColorID (..)
 	, supportsColor
 	, canDefineColor
 	, defineColor
 	, queryColor
+	, queryColorID
 	, defaultColorID
 	, newColorID
 	, setColorID
@@ -256,6 +262,14 @@ newWindow rows cols x y = Curses $ do
 			{# call wtimeout #} win (- 1)
 			return win
 
+getWindowRect :: Window -> Curses (Integer, Integer, Integer, Integer)
+getWindowRect win = Curses $ do
+    h <- {# call getmaxy #} win
+    w <- {# call getmaxx #} win
+    y <- {# call getbegy #} win
+    x <- {# call getbegx #} win
+    return (toInteger h, toInteger w, toInteger y, toInteger x)
+
 -- | Close a window, and free all resources associated with it. Once a
 -- window has been closed, it is no longer safe to use.
 --
@@ -281,6 +295,10 @@ updateWindow win (Update reader) = do
 	a <- R.runReaderT reader win
 	Curses ({# call wnoutrefresh #} win >>= checkRC "updateWindow")
 	return a
+
+updateWindowNoRefresh :: Window -> Update a -> Curses a
+updateWindowNoRefresh win (Update reader) = do
+	R.runReaderT reader win
 
 -- | Moves the window to the given (row,column) coordinate.
 moveWindow :: Integer -> Integer -> Update ()
@@ -505,6 +523,26 @@ setBackground g = withWindow_ "setBackground" $ \win ->
 	withMaybeGlyph (Just g) $ \pChar ->
 	{# call wbkgrndset #} win pChar >> return 0
 
+overwriteFrom :: Window -> Update ()
+overwriteFrom src = withWindow_ "overwriteFrom" $ \win ->
+    {# call overwrite #} src win
+
+overlayFrom :: Window -> Update ()
+overlayFrom src = withWindow_ "overlayFrom" $ \win ->
+    {# call overlay #} src win
+
+copyFrom :: Window -> Integer -> Integer -> Integer -> Integer -> Integer -> Integer -> Bool -> Update ()
+copyFrom src sminrow smincol dminrow dmincol dmaxrow dmaxcol isOverlay = withWindow_ "copyFrom" $ \win ->
+    {# call copywin #}
+        src win
+        (fromInteger sminrow)
+        (fromInteger smincol)
+        (fromInteger dminrow)
+        (fromInteger dmincol)
+        (fromInteger dmaxrow)
+        (fromInteger dmaxcol)
+        (cFromBool isOverlay)
+
 data Attribute
 	= AttributeColor ColorID -- ^ A_COLOR
 	| AttributeStandout -- ^ A_STANDOUT
@@ -589,7 +627,7 @@ data Color
 	-- be supported by the current terminal. Users are responsible for
 	-- checking 'maxColor' when using extended colors.
 	| Color Int16
-	deriving (Show, Eq)
+	deriving (Show, Read, Eq)
 
 -- Get the maximum 'Color' supported by the current terminal.
 maxColor :: Curses Integer
@@ -659,6 +697,16 @@ queryColor c = Curses $
 		green <- fmap toInteger (peek pGreen)
 		blue <- fmap toInteger (peek pBlue)
 		return (red, green, blue)
+
+queryColorID :: ColorID -> Curses (Color, Color)
+queryColorID (ColorID id) = Curses $
+	alloca $ \pFg ->
+	alloca $ \pBg -> do
+		rc <- {# call pair_content #} id pFg pBg
+		checkRC "queryColorId" rc
+		fg <- fmap (Color . fromIntegral) (peek pFg)
+		bg <- fmap (Color . fromIntegral) (peek pBg)
+		return (fg, bg)
 
 -- | The default color ID
 defaultColorID :: ColorID
